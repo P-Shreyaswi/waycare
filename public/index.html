@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WayCare – 3D hospital navigation</title>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#eef3f3;--card:#fff;--tx:#12303a;--mut:#53707a;--ac:#0f7b7b;--sig:#ffb800;--bd:#cfdcde}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d1a1f;--card:#15262d;--tx:#e6f1f2;--mut:#8fb0b8;--ac:#3cc1c1;--sig:#ffc233;--bd:#27414a}}
+:root[data-theme="dark"]{--bg:#0d1a1f;--card:#15262d;--tx:#e6f1f2;--mut:#8fb0b8;--ac:#3cc1c1;--sig:#ffc233;--bd:#27414a}
+html,body{height:100%;margin:0;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{background:var(--bg);color:var(--tx);font:16px/1.45 "Atkinson Hyperlegible",system-ui,sans-serif}
+#app{height:100%;display:flex;flex-direction:column}
+#view{position:relative;flex:1;min-height:230px}
+#cv{width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+#fl{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:6px}
+#fl button{min-width:74px}
+button,select{font:inherit;color:var(--tx);background:var(--card);border:1.5px solid var(--bd);border-radius:10px;padding:8px 12px}
+button{cursor:pointer}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--sig);outline-offset:2px}
+button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+#panel{background:var(--card);border-top:1.5px solid var(--bd);padding:14px 16px;max-height:46vh;overflow:auto}
+h1{font-size:19px;margin:0 0 10px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.row label{flex:1;min-width:140px;display:flex;flex-direction:column;font-size:14px;color:var(--mut);gap:3px}
+.row select{width:100%}
+.sum{font-weight:700;margin:6px 0}
+ol{margin:6px 0 0;padding-left:20px;max-width:70ch}
+li{margin:4px 0}
+.chk{display:flex;align-items:center;gap:8px}
+.chk input{width:20px;height:20px}
+.hint{color:var(--mut);font-size:13px;margin-top:8px}
+</style></head><body>
+<div id="app">
+<div id="view"><canvas id="cv" aria-label="3D hospital map"></canvas><div id="fl"></div></div>
+<div id="panel">
+<h1>WayCare: find your way inside the hospital</h1>
+<div class="row">
+<label>You are at<select id="from"></select></label>
+<label>Go to<select id="to"></select></label>
+</div>
+<div class="row">
+<label class="chk" style="flex-direction:row;color:var(--tx);align-items:center"><input type="checkbox" id="sf"> Step-free route (no stairs)</label>
+<button id="nr">Nearest restroom</button><button id="em">Emergency</button><button id="ap">My appointment</button><button id="wk">Start walking</button><button id="ev" style="border-color:#e5484d">Evacuate</button><select id="lg" aria-label="Language"><option value="en">English</option><option value="es">Español</option><option value="hi">हिन्दी</option></select><label class="chk"><input type="checkbox" id="vo"> Voice</label><button id="rp">Replay</button>
+</div>
+<div class="sum" id="sum"></div><div id="bn" aria-live="polite" style="font-weight:700;padding:8px 12px;border-radius:10px;background:var(--bd);margin:6px 0;min-height:1.4em"></div>
+<ol id="steps"></ol>
+<details class="hint"><summary>My recent searches</summary><ul id="hist"></ul></details>
+<div class="hint">Drag to rotate, scroll or pinch to zoom. Demo hospital is fictional. No sign-in needed: searches are saved anonymously (random device code, no personal details) for 30 days to improve signage.</div>
+</div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="hospital.js"></script>
+<script>
+const {H,XS,FN,NM,COL,pos,adj,L,fl,rooms,byName,dj,path,hd,directions}=Hospital;
+// ---------- 3D ----------
+const cv=document.getElementById("cv"),view=document.getElementById("view");
+const R=new THREE.WebGLRenderer({canvas:cv,alpha:true,antialias:true});R.setPixelRatio(Math.min(devicePixelRatio,2));
+const S=new THREE.Scene(),Cm=new THREE.PerspectiveCamera(45,1,.1,500);
+const G=[0,1,2].map(f=>{const g=new THREE.Group();g.position.y=f*H;S.add(g);return g}),VG=new THREE.Group(),RG=[];S.add(VG);
+function lab(t){const c=document.createElement("canvas");c.width=256;c.height=64;const x=c.getContext("2d");x.font="700 25px sans-serif";
+ const w=Math.min(250,x.measureText(t).width+24);x.fillStyle="rgba(255,255,255,.93)";x.beginPath();x.roundRect((256-w)/2,10,w,44,12);x.fill();
+ x.fillStyle="#12303a";x.textAlign="center";x.textBaseline="middle";x.fillText(t,128,33);
+ const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false,transparent:true}));s.scale.set(6.4,1.6,1);s.renderOrder=5;return s}
+const RM={};
+for(let f=0;f<3;f++){const g=G[f];
+ const sl=new THREE.Mesh(new THREE.BoxGeometry(44,.4,22),new THREE.MeshBasicMaterial({color:0x7fa3aa,transparent:true,opacity:.35}));sl.position.y=-.2;g.add(sl);
+ const co=new THREE.Mesh(new THREE.PlaneGeometry(36,3.6),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.5}));co.rotation.x=-Math.PI/2;co.position.y=.02;g.add(co);
+ for(let s=0;s<2;s++)for(let c=0;c<4;c++){const id="r"+f+s+c,n=NM[f][s][c];
+  const m=new THREE.Mesh(new THREE.BoxGeometry(7.4,2.4,8),new THREE.MeshBasicMaterial({color:COL[n]||0x3a9bd5,transparent:true,opacity:.22,depthWrite:false}));
+  m.position.set(XS[c],1.2,s?5.8:-5.8);g.add(m);RM[id]=m;
+  const e=new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry),new THREE.LineBasicMaterial({color:0x5c7c85}));e.position.copy(m.position);g.add(e);
+  const l=lab(n);l.position.set(XS[c],3.6,s?5.8:-5.8);g.add(l)}
+ [["Elevator",-18,0x0f7b7b],["Stairs",18,0x8a6d1f]].forEach(([n,x,c])=>{const b=new THREE.Mesh(new THREE.BoxGeometry(3,3,3),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:.7}));b.position.set(x,1.5,0);g.add(b);const l=lab(n);l.position.set(x,4.6,0);g.add(l)});
+}
+// route + marker
+const rmat=new THREE.MeshBasicMaterial({color:0xffb800}),mk=new THREE.Mesh(new THREE.SphereGeometry(.7,16,12),new THREE.MeshBasicMaterial({color:0xe5484d}));S.add(mk);
+let pts=[],cum=[],tot=0,tm=0,sel=-1;
+function seg(a,b,par){const A=new THREE.Vector3(...a),B=new THREE.Vector3(...b),d=B.clone().sub(A);if(d.length()<.01)return;
+ const m=new THREE.Mesh(new THREE.CylinderGeometry(.25,.25,d.length(),8),rmat);m.position.copy(A).add(B).multiplyScalar(.5);
+ m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),d.normalize());par.add(m);RG.push([m,par])}
+function drawRoute(p){RG.forEach(([m,par])=>par.remove(m));RG.length=0;pts=[];cum=[0];tot=0;
+ p.forEach(id=>{const q=pos[id];pts.push([q[0],q[1]+.5,q[2]])});
+ for(let i=0;i<p.length-1;i++){const a=pts[i],b=pts[i+1],same=fl[p[i]]==fl[p[i+1]];
+  const par=same?G[fl[p[i]]]:VG,o=same?fl[p[i]]*H:0;
+  seg(same?[a[0],a[1]-o,a[2]]:a,same?[b[0],b[1]-o,b[2]]:b,par);
+  tot+=Math.hypot(b[0]-a[0],b[1]-a[1],b[2]-a[2]);cum.push(tot)}
+ tm=0}
+function markerAt(d){let i=1;while(i<cum.length-1&&cum[i]<d)i++;const t=(d-cum[i-1])/Math.max(1e-6,cum[i]-cum[i-1]),a=pts[i-1],b=pts[i];
+ mk.position.set(a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t)}
+// floor selector
+function showFloor(f){sel=f;G.forEach((g,i)=>g.visible=f<0||f==i);VG.visible=f<0;
+ [...document.querySelectorAll("#fl button")].forEach((b,i)=>b.classList.toggle("on",i-1==f));dist=f<0?64:42}
+const fb=document.getElementById("fl");["All floors",...FN].forEach((n,i)=>{const b=document.createElement("button");b.textContent=i?n.replace("Ground floor","Ground"):n;b.onclick=()=>showFloor(i-1);fb.appendChild(b)});
+// orbit
+let th=1.25,ph=.95,dist=64;const P=new Map();let pd=0;const cl=d=>Math.min(110,Math.max(18,d));
+cv.onpointerdown=e=>{cv.setPointerCapture(e.pointerId);P.set(e.pointerId,[e.clientX,e.clientY])};
+cv.onpointermove=e=>{if(!P.has(e.pointerId))return;const o=P.get(e.pointerId);
+ if(P.size==1){th-=(e.clientX-o[0])*.008;ph=Math.min(1.5,Math.max(.2,ph-(e.clientY-o[1])*.008))}
+ P.set(e.pointerId,[e.clientX,e.clientY]);
+ if(P.size==2){const[a,b]=[...P.values()],d=Math.hypot(a[0]-b[0],a[1]-b[1]);if(pd)dist=cl(dist*pd/d);pd=d}};
+cv.onpointerup=cv.onpointercancel=e=>{P.delete(e.pointerId);pd=0};
+cv.onwheel=e=>{e.preventDefault();dist=cl(dist*(1+e.deltaY*.001))};
+function resize(){const w=view.clientWidth,h=view.clientHeight;R.setSize(w,h,false);Cm.aspect=w/h;Cm.updateProjectionMatrix()}
+new ResizeObserver(resize).observe(view);resize();
+let last=performance.now();
+function loop(n){const dt=Math.min(.05,(n-last)/1000);last=n;
+ const ty=sel<0?H:sel*H;Cm.position.set(dist*Math.sin(ph)*Math.cos(th),ty+dist*Math.cos(ph),dist*Math.sin(ph)*Math.sin(th));Cm.lookAt(0,ty,0);
+ if(tot){if(walk){tm=Math.min(tot,tm+dt*9);if(tm>=tot)walk=false;onWalk(tm)}else tm=(tm+dt*9)%(tot+10);markerAt(Math.min(tm,tot));mk.visible=sel<0||Math.abs(mk.position.y-sel*H)<1.6}
+ R.render(S,Cm);requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+// ---------- UI ----------
+const $=id=>document.getElementById(id),fromS=$("from"),toS=$("to");
+[fromS,toS].forEach(s=>{for(let f=0;f<3;f++){const og=document.createElement("optgroup");og.label=FN[f];
+ rooms.filter(r=>fl[r]==f).forEach(r=>{const o=document.createElement("option");o.value=r;o.textContent=L[r];og.appendChild(o)});s.appendChild(og)}});
+fromS.value=byName("Main Entrance");toS.value=byName("Orthopedics");
+let ST=[],ENDS=[0],walk=false,lastCur=-1,lang="en";
+const LC={en:"en-US",es:"es-ES",hi:"hi-IN"},txt=i=>Hospital.fmt(ST[i],lang);
+function say(t){if($("vo").checked&&window.speechSynthesis){speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang=LC[lang];speechSynthesis.speak(u)}}
+function renderSteps(){$("steps").innerHTML=ST.map((s,i)=>"<li id=st"+i+">"+txt(i)+"</li>").join("");$("bn").textContent=ST.length?txt(0):""}
+function mkEnds(p){const e=[0];let d=0,i=0;
+ while(i<p.length-1){const a=p[i],b=p[i+1];
+  if(fl[a]!=fl[b]){if(d>1){e.push(cum[i]);d=0}let j=i+1;while(j<p.length-1&&fl[p[j]]!=fl[p[j+1]])j++;e.push(cum[j]);i=j}
+  else{d+=hd(a,b);i++}}
+ e.push(tot);return e}
+function onWalk(d){if(!ST.length)return;let c=ENDS.findIndex(e=>d<=e+1e-6);if(c<0||c>=ST.length)c=ST.length-1;
+ $("bn").textContent=txt(c)+(ST[c].m!=null?" ("+Math.max(0,Math.round(ENDS[c]-d))+" m)":"");
+ document.querySelectorAll("#steps li").forEach((l,i)=>l.style.fontWeight=i==c?"700":"400");
+ if(c!=lastCur){lastCur=c;say(txt(c))}}
+$("lg").onchange=()=>{lang=$("lg").value;renderSteps();if(lastCur>=0)$("bn").textContent=txt(lastCur)};
+$("wk").onclick=()=>{if(!ST.length)return;showFloor(-1);walk=true;tm=0;lastCur=-1};
+$("ev").onclick=async()=>{toS.value=byName("Main Entrance");await go();$("view").style.outline="4px solid #e5484d";
+ const m={en:"Evacuation: follow the route to the main entrance.",es:"Evacuación: siga la ruta a la entrada principal.",hi:"निकासी: मुख्य प्रवेश द्वार तक मार्ग का पालन करें।"}[lang];$("bn").textContent=m;say(m)};
+async function loadHist(){try{const h=await(await fetch("/api/me/history")).json();
+ $("hist").innerHTML=h.map(x=>"<li>"+x.created_at+" UTC: "+L[x.from_id]+" to "+L[x.to_id]+(x.step_free?" (step-free)":"")+"</li>").join("")||"<li>No searches yet.</li>"}catch(e){}}
+function boot(){sync();go(true);loadHist()}
+let CL=new Set();const CM=[];
+const dm=p=>p.reduce((t,id,i)=>i&&fl[id]==fl[p[i-1]]?t+hd(id,p[i-1]):t,0);
+async function go(auto){$("view").style.outline="";const a=fromS.value,b=toS.value,sf=$("sf").checked;let r;
+ try{const q=await fetch("/api/route?from="+a+"&to="+b+"&stepFree="+sf+(auto===true?"&auto=1":""));r=await q.json();
+  if(!q.ok){$("sum").textContent=r.error;$("steps").innerHTML="";return}}
+ catch(e){const x=path(a,b,sf,CL);r={p:x.p,t:x.t,steps:directions(x.p)}}
+ Object.values(RM).forEach(m=>m.material.opacity=.22);RM[a].material.opacity=.55;RM[b].material.opacity=.6;
+ drawRoute(r.p);
+ $("sum").textContent="About "+Math.max(1,Math.round(r.t/60))+" min walk, "+Math.round(dm(r.p))+" m"+(sf?", step-free":"")+(CL.size?", avoiding closures":"");
+ ST=r.steps;ENDS=mkEnds(r.p);renderSteps();if(auto!==true)setTimeout(loadHist,300);
+ if(sel>=0&&sel!=fl[a]&&sel!=fl[b])showFloor(-1)}
+[fromS,toS,$("sf")].forEach(x=>x.onchange=go);
+function renderAdmin(){}
+function applyClosures(l){const k=JSON.stringify(l);if(k==applyClosures.k)return false;applyClosures.k=k;
+ CM.forEach(m=>m.parent&&m.parent.remove(m));CM.length=0;CL=new Set();
+ l.forEach(([a,b])=>{CL.add(a+"|"+b);CL.add(b+"|"+a);const p=pos[a],q=pos[b];
+  const m=new THREE.Mesh(new THREE.BoxGeometry(Math.abs(p[0]-q[0])||1,1.2,3.6),new THREE.MeshBasicMaterial({color:0xe5484d,transparent:true,opacity:.55}));
+  m.position.set((p[0]+q[0])/2,.6,0);G[fl[a]].add(m);CM.push(m)});
+ renderAdmin(l);return true}
+async function sync(){try{const l=await(await fetch("/api/closures")).json();if(Array.isArray(l)&&applyClosures(l))go(true)}catch(e){}}
+setInterval(sync,4000);
+
+$("ap").onclick=async()=>{try{const ap=await(await fetch("/api/appointments/demo")).json();toS.value=ap.roomId;await go();$("sum").textContent=ap.clinicName+" at "+ap.time+": "+$("sum").textContent}catch(e){}};
+$("rp").onclick=()=>tm=0;
+$("em").onclick=()=>{toS.value=byName("Emergency");go()};
+$("nr").onclick=()=>{const{D}=dj(fromS.value,$("sf").checked,CL),rs=rooms.filter(r=>L[r]=="Restroom").sort((x,y)=>D[x]-D[y]);toS.value=rs[0];go()};
+showFloor(-1);boot();
+</script></body></html>
