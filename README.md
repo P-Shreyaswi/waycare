@@ -6,7 +6,7 @@ Node/Express + SQLite backend, Three.js frontend. Fictional 3-floor hospital.
     npm install
     npm start        # http://localhost:3000   (admin: http://localhost:3000/admin)
 
-Default admin (change before deploying): `admin@waycare.local` / `admin123`
+Admin credentials must be configured securely using environment variables before deployment.
 Env vars: `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `DB_PATH`, `RETAIN_DAYS` (default 30), `PORT`.
 
 ## Access model
